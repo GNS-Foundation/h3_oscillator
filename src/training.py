@@ -67,17 +67,33 @@ class SingleStepPairs(Dataset):
 
 @dataclass
 class RegionTensors:
-    """Region adjacency tensors needed by GNN-style models, on the active device."""
-    neighbor_idx: torch.Tensor   # (n_cells, 6) int64
+    """Region adjacency tensors needed by GNN/CNN-style models, on the active device.
+
+    Holds both the standard (unordered) neighbor tensors used by B3 (GNN with
+    mean aggregation) and direction-sorted variants used by B4 (hex CNN with
+    directional kernels) and M1 (gauge-equivariant convolution).
+    """
+    # Standard (unordered) neighbor info — used by B3 (GNN)
+    neighbor_idx: torch.Tensor   # (n_cells, 6) int64; -1 sentinels for missing
     valid_mask: torch.Tensor     # (n_cells, 6) bool
-    n_valid: torch.Tensor        # (n_cells,) int
+    n_valid: torch.Tensor        # (n_cells,) int — number of valid neighbors
+
+    # Direction-sorted neighbor info — used by B4 (hex CNN), M1 (gauge-equiv conv)
+    # Position k corresponds to direction k*60° from East
+    dir_neighbor_idx: torch.Tensor   # (n_cells, 6) int64; -1 for missing direction
+    dir_valid_mask: torch.Tensor     # (n_cells, 6) bool
 
     @classmethod
     def from_region(cls, region: H3Region, device: torch.device) -> "RegionTensors":
         nbr = torch.from_numpy(region.neighbor_indices).long().to(device)
         valid = (nbr >= 0)
         n_valid = valid.sum(dim=1)
-        return cls(neighbor_idx=nbr, valid_mask=valid, n_valid=n_valid)
+        dir_nbr = torch.from_numpy(region.direction_sorted_neighbor_indices).long().to(device)
+        dir_valid = (dir_nbr >= 0)
+        return cls(
+            neighbor_idx=nbr, valid_mask=valid, n_valid=n_valid,
+            dir_neighbor_idx=dir_nbr, dir_valid_mask=dir_valid,
+        )
 
 
 # -------------------------------------------------------------------------
@@ -124,15 +140,15 @@ def autoregressive_rollout(
     region_tensors: RegionTensors,
     n_steps: int,
 ) -> torch.Tensor:
-    """Generic autoregressive rollout that works with any model exposing
-    `forward(x, neighbor_idx, valid_mask, n_valid)` returning x_{t+1}.
+    """Generic autoregressive rollout. The model's forward signature is
+    `model(x, region_tensors)` — each model picks the tensors it needs.
 
     Returns (batch, n_steps, n_cells, n_features).
     """
     states = []
     x = x_init
     for _ in range(n_steps):
-        x = model(x, region_tensors.neighbor_idx, region_tensors.valid_mask, region_tensors.n_valid)
+        x = model(x, region_tensors)
         states.append(x)
     return torch.stack(states, dim=1)
 
@@ -256,7 +272,7 @@ def train_model(
         for x, y in loader:
             x = x.to(device)
             y = y.to(device)
-            pred = model(x, region_tensors.neighbor_idx, region_tensors.valid_mask, region_tensors.n_valid)
+            pred = model(x, region_tensors)
             loss = F.mse_loss(pred, y)
 
             optimizer.zero_grad()

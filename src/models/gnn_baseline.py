@@ -44,7 +44,7 @@ class HexGNNLayer(nn.Module):
 
     def forward(
         self,
-        h: torch.Tensor,         # (batch, n_cells, hidden)
+        h: torch.Tensor,             # (batch, n_cells, hidden)
         neighbor_idx: torch.Tensor,  # (n_cells, 6), int64; -1 marks missing
         valid_mask: torch.Tensor,    # (n_cells, 6), bool
         n_valid: torch.Tensor,       # (n_cells,), int — count of valid neighbors per cell
@@ -99,53 +99,36 @@ class HexGNN(nn.Module):
         ])
         self.decode = nn.Linear(hidden_dim, n_features)
 
-    def forward(
-        self,
-        x: torch.Tensor,             # (batch, n_cells, n_features)
-        neighbor_idx: torch.Tensor,  # (n_cells, 6)
-        valid_mask: torch.Tensor,    # (n_cells, 6) bool
-        n_valid: torch.Tensor,       # (n_cells,)
-    ) -> torch.Tensor:
-        """Predict state at next timestep.
+    def forward(self, x: torch.Tensor, region_tensors) -> torch.Tensor:
+        """Predict state at next timestep using GNN message passing.
+
+        Reads `neighbor_idx`, `valid_mask`, `n_valid` from `region_tensors`.
 
         Returns the *delta* from input applied — i.e., the model learns to
         predict the residual (next state - current state), which we add back.
         This is a standard trick for dynamical-system prediction; it makes
         the identity map easy to learn and improves stability.
         """
+        nbr = region_tensors.neighbor_idx
+        valid = region_tensors.valid_mask
+        n_valid = region_tensors.n_valid
+
         h = self.embed(x)  # (batch, n_cells, hidden)
         for layer in self.gnn_layers:
-            h_new = layer(h, neighbor_idx, valid_mask, n_valid)
+            h_new = layer(h, nbr, valid, n_valid)
             h = h + h_new if self.residual else h_new
 
         delta = self.decode(h)  # (batch, n_cells, n_features)
         return x + delta  # residual prediction: x_{t+1} = x_t + delta
-
-    def rollout(
-        self,
-        x_init: torch.Tensor,        # (batch, n_cells, n_features) — starting state
-        neighbor_idx: torch.Tensor,
-        valid_mask: torch.Tensor,
-        n_valid: torch.Tensor,
-        n_steps: int,
-    ) -> torch.Tensor:
-        """Autoregressive rollout for n_steps.
-
-        Returns predicted states for steps 1..n_steps, shape (batch, n_steps, n_cells, n_features).
-        """
-        states = []
-        x = x_init
-        for _ in range(n_steps):
-            x = self.forward(x, neighbor_idx, valid_mask, n_valid)
-            states.append(x)
-        return torch.stack(states, dim=1)
 
     def n_parameters(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
 
 if __name__ == "__main__":
-    # Smoke test: tiny model, random data, one forward + rollout.
+    # Smoke test: tiny model, random data, one forward.
+    from dataclasses import dataclass
+
     torch.manual_seed(0)
 
     n_cells = 100
@@ -153,22 +136,32 @@ if __name__ == "__main__":
     n_features = 2
     n_neighbors = 6
 
-    # Fake neighbor structure: each cell has 6 random neighbors (or -1)
+    # Fake neighbor structure
     neighbor_idx = torch.randint(0, n_cells, (n_cells, n_neighbors))
-    # Mark a couple as missing
     neighbor_idx[0, 5] = -1
     neighbor_idx[1, 4] = -1
     valid_mask = neighbor_idx >= 0
     n_valid = valid_mask.sum(dim=1)
+
+    # Build a minimal RegionTensors stub
+    @dataclass
+    class _RT:
+        neighbor_idx: torch.Tensor
+        valid_mask: torch.Tensor
+        n_valid: torch.Tensor
+        dir_neighbor_idx: torch.Tensor
+        dir_valid_mask: torch.Tensor
+
+    rt = _RT(
+        neighbor_idx=neighbor_idx, valid_mask=valid_mask, n_valid=n_valid,
+        dir_neighbor_idx=neighbor_idx, dir_valid_mask=valid_mask,
+    )
 
     model = HexGNN(n_features=2, hidden_dim=32, n_layers=3)
     print(f"Model: {model}")
     print(f"Parameters: {model.n_parameters()}")
 
     x = torch.randn(batch, n_cells, n_features)
-    y = model(x, neighbor_idx, valid_mask, n_valid)
+    y = model(x, rt)
     print(f"Single-step input  : {x.shape}")
     print(f"Single-step output : {y.shape}")
-
-    rollout = model.rollout(x, neighbor_idx, valid_mask, n_valid, n_steps=5)
-    print(f"5-step rollout shape: {rollout.shape}")

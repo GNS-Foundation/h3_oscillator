@@ -87,6 +87,61 @@ class H3Region:
         # Cache cell center lat/lons (used for visualization and positional encoding)
         self._cell_centers = None
 
+        # Build direction-sorted neighbor indices: same neighbors, but ordered
+        # by global compass angle (E=0, counterclockwise). Used by B4 (static
+        # hex CNN) for directional kernels.
+        # For cells with fewer than 6 valid neighbors, missing directional
+        # slots are -1.
+        self.direction_sorted_neighbor_indices = self._compute_direction_sorted_neighbors()
+
+    def _compute_direction_sorted_neighbors(self) -> np.ndarray:
+        """For each cell, sort its 6 (or fewer) neighbors by global compass angle.
+
+        Returns shape (n_cells, 6) with -1 for missing directional slots.
+        Position k corresponds to direction at angle k*60° from East (when 6
+        neighbors present and roughly aligned with hex orientation).
+
+        For cells with fewer than 6 neighbors (region boundary), we keep the
+        valid neighbors at their natural angular positions and leave gaps
+        filled with -1. The position assignment uses 60°-bucketing: each
+        valid neighbor goes to the slot k that minimizes |angle - k*60°|.
+        """
+        centers = self.cell_centers  # (n, 2) lat/lon
+        sorted_idx = np.full((self.n_cells, 6), -1, dtype=np.int64)
+
+        for i in range(self.n_cells):
+            valid = self.neighbor_indices[i][self.neighbor_indices[i] >= 0]
+            if len(valid) == 0:
+                continue
+            # Compute angle of each neighbor relative to cell i
+            d_lat = centers[valid, 0] - centers[i, 0]
+            d_lon = centers[valid, 1] - centers[i, 1]
+            # Use atan2(dy, dx) — small-region Euclidean approximation
+            # (we plot lon on x-axis, lat on y-axis for visualization, so use d_lon as x)
+            angles = np.arctan2(d_lat, d_lon)  # in radians, range (-pi, pi]
+            # Convert to degrees in [0, 360)
+            angles_deg = (np.degrees(angles) + 360.0) % 360.0
+            # Bucket each into one of 6 slots: 0=0°, 1=60°, ..., 5=300°
+            # using nearest-neighbor angular distance
+            slot_indices = np.round(angles_deg / 60.0).astype(int) % 6
+            # Handle collisions: if two neighbors land in the same slot,
+            # we keep the one with smaller angular distance to slot center.
+            for nbr_local, slot in zip(valid, slot_indices):
+                if sorted_idx[i, slot] == -1:
+                    sorted_idx[i, slot] = nbr_local
+                else:
+                    # Collision: keep the nearer one
+                    existing = sorted_idx[i, slot]
+                    nbr_angle = angles_deg[list(valid).index(nbr_local)]
+                    existing_local_idx = list(valid).index(existing)
+                    existing_angle = angles_deg[existing_local_idx]
+                    target_angle = slot * 60.0
+                    if (abs(nbr_angle - target_angle) % 360.0
+                        < abs(existing_angle - target_angle) % 360.0):
+                        sorted_idx[i, slot] = nbr_local
+
+        return sorted_idx
+
     @property
     def cell_centers(self) -> np.ndarray:
         """Return (n_cells, 2) array of (lat, lon) centers for each cell."""
