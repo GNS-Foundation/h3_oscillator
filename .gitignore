@@ -13,3 +13,6 @@ data/*.npy
 .DS_Store
 .vscode/
 .idea/
+
+# Training results (large binary checkpoints, regenerable)
+results/
