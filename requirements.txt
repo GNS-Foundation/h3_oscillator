@@ -1,0 +1,6 @@
+numpy>=1.26
+matplotlib>=3.8
+h3>=4.0,<5
+torch>=2.0
+torch-geometric>=2.5
+pypdf>=4.0

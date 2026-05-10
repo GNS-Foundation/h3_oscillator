@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.pytest_cache/
+
+# Generated data (large files; regenerable)
+data/*.npz
+data/*.npy
+
+# macOS / IDE
+.DS_Store
+.vscode/
+.idea/
