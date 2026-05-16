@@ -16,3 +16,9 @@ data/*.npy
 
 # Training results (large binary checkpoints, regenerable)
 results/
+
+# Generated synthetic datasets (Parquet, large files; regenerable)
+data/
+logs/
+*.parquet
+*.pq
